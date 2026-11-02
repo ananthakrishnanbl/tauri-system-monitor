@@ -175,6 +175,7 @@ export default function App() {
 
     return () => {
       alive.current = false;
+      invoke("stop_stream");
     };
   }, []);
 

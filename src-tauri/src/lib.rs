@@ -1,11 +1,12 @@
 use std::time::Duration;
-use sysinfo::{ProcessesToUpdate, System};
+use sysinfo::{ProcessesToUpdate, System, ProcessRefreshKind};
 use tauri::{ipc::Channel, Manager, State};
 use tokio::{sync::Mutex, time::sleep};
 use serde::{Serialize,Deserialize};
 
 struct AppState {
     sys: Mutex<System>,
+    flag: Mutex<i32>
 }
 
 #[derive(Serialize,Deserialize)]
@@ -37,7 +38,7 @@ struct Info{
     ram: MemUsage,
     swap: MemUsage,
     proc: Vec<ProcInfo>,
-    cpu: i32
+    cpu: f32
 }
 
 fn snapshot(sys: &System) -> Vec<ProcInfo> {
@@ -70,8 +71,8 @@ async fn get_system_info(
     })
 }
 
-fn to_gb(bytes: f32)->f32{
-    bytes/(1024.0 * 1024.0 * 1024.0)
+fn to_gb(bytes: f64)->f32{
+    (bytes/(1024.0 * 1024.0 * 1024.0)) as f32
 }
 
 #[tauri::command]
@@ -79,12 +80,24 @@ async fn stream_info(
     state: State<'_,AppState>,
     on_stream: Channel<Info>
 ) -> Result<(),String> {
+    {
+        let mut flag=state.flag.lock().await;
+        *flag=0;
+    }
+    let mut tick=0;
     loop{
+        let kind = ProcessRefreshKind::nothing().with_memory().with_cpu();
+        let f;
         let payload={
             let mut sys=state.sys.lock().await;
+            let flag=state.flag.lock().await;
+            f=flag.clone();
             sys.refresh_memory();
             sys.refresh_cpu_usage();
-            sys.refresh_processes(ProcessesToUpdate::All, true);
+            tick+=1;
+            if tick%4==0 {
+                sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+            }
             let v: Vec<ProcInfo>=snapshot(&sys);
             let u1=sys.used_memory();
             let t1=sys.total_memory();
@@ -92,24 +105,40 @@ async fn stream_info(
             let t2=sys.total_swap();
             Info{
                 ram: MemUsage{
-                    used_gb: to_gb(u1 as f32),
-                    total_gb: to_gb(t1 as f32),
-                    percent: if t1==0 { 0.0 } else { u1 as f32 / t1 as f32 * 100.0 }
+                    used_gb: to_gb(u1 as f64),
+                    total_gb: to_gb(t1 as f64),
+                    percent: if t1==0 { 0.0 } else { (u1 as f64 / t1 as f64 * 100.0) as f32}
                 },
                 swap: MemUsage{
-                    used_gb: to_gb(u2 as f32),
-                    total_gb: to_gb(t2 as f32),
-                    percent: if t2==0 { 0.0 } else { u2 as f32 / t2 as f32 * 100.0 }
+                    used_gb: to_gb(u2 as f64),
+                    total_gb: to_gb(t2 as f64),
+                    percent: if t2==0 { 0.0 } else {(u2 as f64 / t2 as f64 * 100.0) as f32}
                 },
                 proc: v,
-                cpu: sys.global_cpu_usage() as i32
+                cpu: sys.global_cpu_usage() as f32
             }
         };
         if on_stream.send(payload).is_err() {
             break;
         }
-        sleep(Duration::from_millis(500)).await;
+
+        if f==1 {
+            break;
+        }
+        
+        // sleep(Duration::from_millis(500)).await;
+        sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
+
     }
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_stream(
+    state: State<'_,AppState>
+) -> Result<(),String>{
+    let mut flag=state.flag.lock().await;
+    *flag=1;
     Ok(())
 }
 
@@ -120,12 +149,12 @@ pub fn run() {
             let mut sys = System::new_all().map_err(|e| format!("sysinfo init failed: {e:?}"))?;
             sys.refresh_cpu_usage();
             sys.refresh_processes(ProcessesToUpdate::All, true);
-            app.manage(AppState { sys: Mutex::new(sys) });
+            app.manage(AppState { sys: Mutex::new(sys), flag: Mutex::new(0) } );
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            stream_info, get_system_info
+            stream_info, get_system_info, stop_stream
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
