@@ -9,21 +9,15 @@ struct AppState {
 }
 
 #[derive(Serialize,Deserialize)]
-struct ram_usage{
+struct MemUsage{
     used_gb: f32,
     total_gb: f32,
     percent: f32
 }
 
-#[derive(Serialize,Deserialize)]
-struct swap_usage{
-    used_gb: f32,
-    total_gb: f32,
-    percent: f32
-}
 
-#[derive(Serialize, Clone)]
-struct proc_info {
+#[derive(Serialize, Clone, Deserialize)]
+struct ProcInfo{
     pid: u32,
     name: String,
     memory: u64, // bytes (RSS)
@@ -31,19 +25,27 @@ struct proc_info {
 }
 
 #[derive(Serialize,Deserialize)]
-struct system_info{
+struct SystemInfo{
     sys_name: String,
     kernel_v :String,
     os_v : String,
     cpu_cores: i32
 }
 
-fn snapshot(sys: &System) -> Vec<proc_info> {
-    let mut v: Vec<proc_info> = sys
+#[derive(Serialize,Deserialize)]
+struct Info{
+    ram: MemUsage,
+    swap: MemUsage,
+    proc: Vec<ProcInfo>,
+    cpu: i32
+}
+
+fn snapshot(sys: &System) -> Vec<ProcInfo> {
+    let mut v: Vec<ProcInfo> = sys
         .processes()
         .iter()
         .filter(|(_, p)| p.thread_kind().is_none()) 
-        .map(|(pid, p)| proc_info {
+        .map(|(pid, p)| ProcInfo {
             pid: pid.as_u32(),
             name: p.name().to_string_lossy().into_owned(),
             memory: p.memory(),
@@ -56,82 +58,11 @@ fn snapshot(sys: &System) -> Vec<proc_info> {
 }
 
 #[tauri::command]
-async fn stream_ram_usage(
-    state: State<'_,AppState>,
-    on_ram_usage:Channel<ram_usage>
-)->Result<(),String>{
-    loop{
-        let payload={
-            let mut sys=state.sys.lock().await;
-            sys.refresh_memory();
-            let used = sys.used_memory();
-            let total = sys.total_memory();
-            ram_usage{
-                used_gb: (used as f32)/1024.0/1024.0/1024.0,
-                total_gb: (total as f32)/1024.0/1024.0/1024.0,
-                percent: used as f32/total as f32 * 100.0,
-            }
-        };
-
-        if on_ram_usage.send(payload).is_err(){
-            break;
-        }
-        sleep(Duration::from_millis(500)).await;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn stream_swap_usage(
-    state: State<'_,AppState>,
-    on_swap_usage:Channel<swap_usage>
-)->Result<(),String>{
-    loop{
-        let payload={
-            let mut sys=state.sys.lock().await;
-            sys.refresh_memory();
-            let used = sys.used_swap();
-            let total = sys.total_swap();
-            swap_usage{
-                used_gb: (used as f32)/1024.0/1024.0/1024.0,
-                total_gb: (total as f32)/1024.0/1024.0/1024.0,
-                percent: used as f32/total as f32 * 100.0,
-            }
-        };
-
-        if on_swap_usage.send(payload).is_err(){
-            break;
-        }
-        sleep(Duration::from_millis(500)).await;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn stream_processes(
-    state: State<'_,AppState>,
-    on_proc_stream: Channel<Vec<proc_info>>
-)->Result<(),String> {
-    loop{
-        let proc: Vec<proc_info>={
-            let mut sys=state.sys.lock().await;
-            sys.refresh_processes(ProcessesToUpdate::All, true);
-            snapshot(&sys)
-        };
-        if on_proc_stream.send(proc).is_err(){
-            break;
-        }
-        sleep(Duration::from_millis(500)).await;
-    }
-    Ok(())
-}
-
-#[tauri::command]
 async fn get_system_info(
     state: State<'_, AppState>
-) -> Result<system_info, String> {
+) -> Result<SystemInfo, String> {
     let sys = state.sys.lock().await;
-    Ok(system_info {
+    Ok(SystemInfo {
         sys_name: System::name().unwrap_or_else(|_| "unknown".into()),
         kernel_v: System::kernel_version().unwrap_or_else(|_| "unknown".into()),
         os_v: System::os_version().unwrap_or_else(|_| "unknown".into()),
@@ -139,19 +70,42 @@ async fn get_system_info(
     })
 }
 
+fn to_gb(bytes: f32)->f32{
+    bytes/(1024.0 * 1024.0 * 1024.0)
+}
+
 #[tauri::command]
-async fn stream_cpu_usage(
+async fn stream_info(
     state: State<'_,AppState>,
-    on_cpu_usage: Channel<i32>
-) -> Result<(),String>{
+    on_stream: Channel<Info>
+) -> Result<(),String> {
     loop{
         let payload={
             let mut sys=state.sys.lock().await;
+            sys.refresh_memory();
             sys.refresh_cpu_usage();
-            sys.global_cpu_usage() as i32
+            sys.refresh_processes(ProcessesToUpdate::All, true);
+            let v: Vec<ProcInfo>=snapshot(&sys);
+            let u1=sys.used_memory();
+            let t1=sys.total_memory();
+            let u2=sys.used_swap();
+            let t2=sys.total_swap();
+            Info{
+                ram: MemUsage{
+                    used_gb: to_gb(u1 as f32),
+                    total_gb: to_gb(t1 as f32),
+                    percent: if t1==0 { 0.0 } else { u1 as f32 / t1 as f32 * 100.0 }
+                },
+                swap: MemUsage{
+                    used_gb: to_gb(u2 as f32),
+                    total_gb: to_gb(t2 as f32),
+                    percent: if t2==0 { 0.0 } else { u2 as f32 / t2 as f32 * 100.0 }
+                },
+                proc: v,
+                cpu: sys.global_cpu_usage() as i32
+            }
         };
-
-        if on_cpu_usage.send(payload).is_err(){
+        if on_stream.send(payload).is_err() {
             break;
         }
         sleep(Duration::from_millis(500)).await;
@@ -163,13 +117,15 @@ async fn stream_cpu_usage(
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let sys = System::new_all().map_err(|e| format!("sysinfo init failed: {e:?}"))?;
+            let mut sys = System::new_all().map_err(|e| format!("sysinfo init failed: {e:?}"))?;
+            sys.refresh_cpu_usage();
+            sys.refresh_processes(ProcessesToUpdate::All, true);
             app.manage(AppState { sys: Mutex::new(sys) });
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            stream_ram_usage,stream_swap_usage,stream_processes,stream_cpu_usage,get_system_info
+            stream_info, get_system_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

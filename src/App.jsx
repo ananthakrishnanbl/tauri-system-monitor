@@ -5,8 +5,9 @@ import "./App.css";
 
 const HISTORY = 60;
 
-const fmtGb = (n) => (n ?? 0).toFixed(2);
-const fmtPct = (n) => (Number.isFinite(n) ? n : 0).toFixed(1);
+const fin = (n) => (Number.isFinite(n) ? n : 0); // NaN/Infinity arrive as null over JSON
+const fmtGb = (n) => fin(n).toFixed(2);
+const fmtPct = (n) => fin(n).toFixed(1);
 const fmtBytes = (b) => {
   if (!b) return "0 MB";
   const mb = b / 1024 / 1024;
@@ -137,37 +138,40 @@ export default function App() {
   useEffect(() => {
     alive.current = true;
 
-    const start = (command, argName, onData) => {
-      const channel = new Channel();
-      channel.onmessage = (msg) => alive.current && onData(msg);
-      invoke(command, { [argName]: channel }).catch((e) =>
-        setError(`${command}: ${e}`)
-      );
+    // Single stream: backend sends { ram, swap, proc, cpu } every tick.
+    const channel = new Channel();
+    channel.onmessage = (d) => {
+      if (!alive.current || !d) return;
+
+      const ramNext = {
+        used_gb: fin(d.ram?.used_gb),
+        total_gb: fin(d.ram?.total_gb),
+        percent: fin(d.ram?.percent),
+      };
+      const swapNext = {
+        used_gb: fin(d.swap?.used_gb),
+        total_gb: fin(d.swap?.total_gb),
+        percent: fin(d.swap?.percent),
+      };
+      const cpuNext = fin(d.cpu);
+
+      setRam(ramNext);
+      setSwap(swapNext);
+      setCpu(cpuNext);
+      setProcs(Array.isArray(d.proc) ? d.proc : []);
+
+      setRamHist((h) => push(h, ramNext.percent));
+      setSwapHist((h) => push(h, swapNext.percent));
+      setCpuHist((h) => push(h, cpuNext));
     };
 
-    start("stream_ram_usage", "onRamUsage", (d) => {
-      setRam(d);
-      setRamHist((h) => push(h, d.percent));
-    });
-
-    start("stream_swap_usage", "onSwapUsage", (d) => {
-      const safe = { ...d, percent: Number.isFinite(d.percent) ? d.percent : 0 };
-      setSwap(safe);
-      setSwapHist((h) => push(h, safe.percent));
-    });
-
-    start("stream_cpu_usage", "onCpuUsage", (d) => {
-      // accepts a plain number (global usage) or an object with a `percent`/`usage` field
-      const v = typeof d === "number" ? d : d?.percent ?? d?.usage ?? 0;
-      setCpu(v);
-      setCpuHist((h) => push(h, v));
-    });
-
-    start("stream_processes", "onProcStream", (d) => setProcs(d));
+    invoke("stream_info", { onStream: channel }).catch((e) =>
+      setError(`stream_info: ${e}`)
+    );
 
     invoke("get_system_info")
       .then(setInfo)
-      .catch(() => {});
+      .catch((e) => setError(`get_system_info: ${e}`));
 
     return () => {
       alive.current = false;
@@ -209,7 +213,7 @@ export default function App() {
         <div className="grid">
           <StatCard
             title="CPU"
-            value={`${fmtPct(cpu)}%`}
+            value={`${Math.round(cpu)}%`}
             sub={info ? `${info.cpu_cores} cores` : "Global usage"}
             percent={cpu}
             history={cpuHist}
