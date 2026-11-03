@@ -84,7 +84,8 @@ async fn stream_info(
         let mut flag=state.flag.lock().await;
         *flag=0;
     }
-    let mut tick=0;
+    let mut tick=-1;
+    let mut v: Vec<ProcInfo>=Vec::new();
     loop{
         let kind = ProcessRefreshKind::nothing().with_memory().with_cpu();
         let f;
@@ -94,11 +95,13 @@ async fn stream_info(
             f=flag.clone();
             sys.refresh_memory();
             sys.refresh_cpu_usage();
+            let mut proc: Vec<ProcInfo>=v.clone();
             tick+=1;
             if tick%4==0 {
                 sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+                proc=snapshot(&sys);
+                v=proc.clone();
             }
-            let v: Vec<ProcInfo>=snapshot(&sys);
             let u1=sys.used_memory();
             let t1=sys.total_memory();
             let u2=sys.used_swap();
@@ -114,7 +117,7 @@ async fn stream_info(
                     total_gb: to_gb(t2 as f64),
                     percent: if t2==0 { 0.0 } else {(u2 as f64 / t2 as f64 * 100.0) as f32}
                 },
-                proc: v,
+                proc: proc,
                 cpu: sys.global_cpu_usage() as f32
             }
         };
@@ -126,8 +129,8 @@ async fn stream_info(
             break;
         }
         
-        // sleep(Duration::from_millis(500)).await;
-        sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
+        sleep(Duration::from_millis(1000)).await;
+        // sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
 
     }
     Ok(())
