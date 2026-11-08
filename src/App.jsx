@@ -22,22 +22,22 @@ export default function App() {
   const swap = fast?.swap_usage;
   const net = fast?.net_info;
 
-  // Series arrays only change identity when history changes.
+  // Two-tone palette: accent for the primary series, muted grey for the secondary.
   const cpuSeries = useMemo(
-    () => [{ label: "CPU", color: "--blue", data: history.cpu }],
+    () => [{ label: "CPU", color: "--accent", data: history.cpu }],
     [history.cpu]
   );
   const memSeries = useMemo(
     () => [
-      { label: "RAM", color: "--green", data: history.ram },
-      { label: "Swap", color: "--amber", data: history.swap, fill: false },
+      { label: "RAM", color: "--accent", data: history.ram },
+      { label: "Swap", color: "--muted", data: history.swap },
     ],
     [history.ram, history.swap]
   );
   const netSeries = useMemo(
     () => [
-      { label: "Download", color: "--violet", data: history.down },
-      { label: "Upload", color: "--orange", data: history.up },
+      { label: "Down", color: "--accent", data: history.down },
+      { label: "Up", color: "--muted", data: history.up },
     ],
     [history.down, history.up]
   );
@@ -59,21 +59,18 @@ export default function App() {
           value={fmtPct(cpu)}
           sub={info ? `${info.cpu_cores} cores` : "—"}
           percent={cpu}
-          color="--blue"
         />
         <StatTile
           label="Memory"
           value={fmtPct(ram?.percent)}
           sub={ram ? `${fmtGb(ram.used_gb)} of ${fmtGb(ram.total_gb)}` : "—"}
           percent={ram?.percent}
-          color="--green"
         />
         <StatTile
           label="Swap"
           value={fmtPct(swap?.percent)}
           sub={swap ? (swap.total_gb ? `${fmtGb(swap.used_gb)} of ${fmtGb(swap.total_gb)}` : "Not configured") : "—"}
           percent={swap?.percent}
-          color="--amber"
         />
         <StatTile
           label="Network"
@@ -83,20 +80,15 @@ export default function App() {
       </div>
 
       <div className="grid-2">
-        <ChartCard
-          title="CPU usage"
-          headline={fmtPct(cpu)}
-          legend={[{ label: "Total", color: "--blue" }]}
-        >
+        <ChartCard title="CPU" legend={[{ label: "Total", color: "--accent" }]}>
           <AreaChart series={cpuSeries} yMax={100} formatY={pctAxis} formatTip={fmtPct} label="CPU usage over the last minute" />
         </ChartCard>
 
         <ChartCard
           title="Memory"
-          headline={ram ? `${fmtGb(ram.used_gb)} used` : "—"}
           legend={[
-            { label: "RAM", color: "--green", value: fmtPct(ram?.percent, 0) },
-            { label: "Swap", color: "--amber", value: fmtPct(swap?.percent, 0) },
+            { label: "RAM", color: "--accent", value: fmtPct(ram?.percent, 0) },
+            { label: "Swap", color: "--muted", value: fmtPct(swap?.percent, 0) },
           ]}
         >
           <AreaChart series={memSeries} yMax={100} formatY={pctAxis} formatTip={fmtPct} label="Memory usage over the last minute" />
@@ -105,10 +97,10 @@ export default function App() {
 
       <ChartCard
         title="Network"
-        headline={net ? `${fmtBytes(net.total_received)} received · ${fmtBytes(net.total_sent)} sent` : "—"}
+        headline={net ? `${fmtBytes(net.total_received)} received · ${fmtBytes(net.total_sent)} sent` : null}
         legend={[
-          { label: "Download", color: "--violet", value: fmtRate(net?.download_speed ?? 0) },
-          { label: "Upload", color: "--orange", value: fmtRate(net?.upload_speed ?? 0) },
+          { label: "Down", color: "--accent", value: fmtRate(net?.download_speed ?? 0) },
+          { label: "Up", color: "--muted", value: fmtRate(net?.upload_speed ?? 0) },
         ]}
       >
         <AreaChart

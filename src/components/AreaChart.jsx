@@ -4,15 +4,9 @@ import { niceCeil } from "../utils/format";
 const PAD = { l: 52, r: 10, t: 10, b: 22 };
 const cssVar = (el, name) => getComputedStyle(el).getPropertyValue(name).trim();
 
-function rgba(hex, a) {
-  const h = hex.replace("#", "");
-  const n = parseInt(h.length === 3 ? h.replace(/./g, "$&$&") : h, 16);
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
-}
-
 /**
- * Lightweight canvas time-series chart.
- *  - series: [{ label, color: "--css-var", data: (number|null)[], fill?: boolean }]
+ * Lightweight canvas line chart (flat colours, no fills or gradients).
+ *  - series: [{ label, color: "--css-var", data: (number|null)[] }]
  *  - yMax:   fixed max (e.g. 100) or omit to auto-scale with `niceFn`
  * Hover is handled imperatively (no React re-render on mouse move).
  */
@@ -103,17 +97,6 @@ function AreaChart({
       ctx.lineWidth = 1.75;
       ctx.strokeStyle = color;
       ctx.stroke();
-
-      if (s.fill !== false) {
-        ctx.lineTo(X(n - 1), PAD.t + ph);
-        ctx.lineTo(X(first), PAD.t + ph);
-        ctx.closePath();
-        const g = ctx.createLinearGradient(0, PAD.t, 0, PAD.t + ph);
-        g.addColorStop(0, rgba(color, 0.28));
-        g.addColorStop(1, rgba(color, 0));
-        ctx.fillStyle = g;
-        ctx.fill();
-      }
     }
 
     // hover crosshair + tooltip

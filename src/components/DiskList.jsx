@@ -9,7 +9,7 @@ function DiskList({ disks = [] }) {
       <ul className="disks">
         {disks.map((d) => {
           const pct = d.total_gb ? (d.used_gb / d.total_gb) * 100 : 0;
-          const color = pct > 90 ? "--red" : pct > 75 ? "--amber" : "--blue";
+          const color = pct > 90 ? "--danger" : "--accent";
           return (
             <li key={`${d.name}|${d.mount_point}`}>
               <div className="disk-top">

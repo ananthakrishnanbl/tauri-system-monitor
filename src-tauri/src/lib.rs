@@ -1,8 +1,8 @@
 use std::time::Duration;
-use sysinfo::{ProcessesToUpdate, System, ProcessRefreshKind, Disks, Networks};
+use sysinfo::{ProcessesToUpdate, System, ProcessRefreshKind, Disks, Networks,Pid, Signal};
 use tauri::{ipc::Channel, Manager, State};
 use tokio::{sync::Mutex, time::sleep};
-use serde::{Serialize,Deserialize};
+use serde::{Serialize};
 use std::sync::atomic::{AtomicBool,Ordering};
 
 struct AppState {
@@ -72,6 +72,38 @@ struct SlowData{
 enum StreamData{
     Fast(FastData),
     Slow(SlowData),
+}
+
+const PROTECTED_NAMES: &[&str] = &[
+    // --- Linux: init, session, display, audio, network ---
+    "systemd", "init", "kthreadd", "systemd-logind", "systemd-journal",
+    "systemd-udevd", "dbus-daemon", "dbus-broker", "polkitd", "udisksd",
+    "NetworkManager", "pipewire", "wireplumber", "pulseaudio",
+    "Xorg", "Xwayland", "gnome-shell", "mutter", "kwin_x11", "kwin_wayland",
+    "plasmashell", "sway", "Hyprland", "gdm", "gdm-session-wor", "sddm", "lightdm",
+    "login", "agetty", "sshd",
+
+    // shells / terminals (killing these closes the user's work)
+    "bash", "zsh", "fish", "sh", "tmux",
+
+    // --- macOS ---
+    "launchd", "kernel_task", "WindowServer", "loginwindow", "Finder", "Dock",
+    "SystemUIServer", "coreaudiod",
+
+    // --- Windows ---
+    "System", "Registry", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
+    "services.exe", "lsass.exe", "svchost.exe", "dwm.exe", "explorer.exe",
+    "fontdrvhost.exe",
+];
+
+fn protection_reason(pid: u32, name: &str) -> Option<&'static str> {
+    if pid <= 1 {
+        Some("system init process")
+    } else if PROTECTED_NAMES.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        Some("critical system process")
+    } else {
+        None
+    }
 }
 
 fn to_gb(bytes: u64)->f32{
@@ -261,6 +293,31 @@ async fn stream_stop(
     Ok(())
 }
 
+#[tauri::command]
+async fn pkill_process(
+    state: State<'_,AppState>,
+    pid: u32,
+    force: bool,
+)->Result<(),String>{
+    let mut sys=state.sys.lock().await;
+    sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
+    let proc = sys
+        .process(Pid::from_u32(pid))
+        .ok_or_else(|| format!("Process {pid} not found"))?;
+
+    let name = proc.name().to_string_lossy().into_owned();
+    if let Some(reason) = protection_reason(pid, &name) {
+        return Err(format!("Refusing to kill {name} ({pid}): {reason}"));
+    }
+    let sent = if force {
+        proc.kill()
+    } else {
+        proc.kill_with(Signal::Term).unwrap_or_else(|| proc.kill())
+    };
+
+    if sent { Ok(()) } else { Err(format!("Could not signal {name} ({pid}); permission denied?")) }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -279,7 +336,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            get_system_info,stream_stop,stream_data
+            get_system_info,stream_stop,stream_data, pkill_process
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

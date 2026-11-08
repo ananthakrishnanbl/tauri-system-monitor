@@ -1,5 +1,6 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { fmtBytes } from "../utils/format";
+import KillDialog from "./KillDialog";
 
 const COLS = [
   { key: "name", label: "Name", num: false },
@@ -8,15 +9,17 @@ const COLS = [
   { key: "mem_usage", label: "Memory", num: true },
 ];
 
-const Row = memo(function Row({ p, maxMem }) {
+const Row = memo(function Row({ p, onKill }) {
   return (
     <tr>
       <td className="proc-name" title={p.name}>{p.name}</td>
       <td className="num muted">{p.pid}</td>
       <td className="num">{p.cpu.toFixed(1)}%</td>
-      <td className="num mem-cell">
-        <span className="mem-bar" style={{ width: `${(p.mem_usage / maxMem) * 100}%` }} />
-        <span className="mem-text">{fmtBytes(p.mem_usage)}</span>
+      <td className="num">{fmtBytes(p.mem_usage)}</td>
+      <td className="num">
+        <button className="link-btn" onClick={() => onKill(p)} aria-label={`End ${p.name}`}>
+          End
+        </button>
       </td>
     </tr>
   );
@@ -26,6 +29,9 @@ const Row = memo(function Row({ p, maxMem }) {
 function ProcessTable({ procs, cores = 1 }) {
   const [sort, setSort] = useState({ key: "mem_usage", dir: "desc" });
   const [query, setQuery] = useState("");
+  const [target, setTarget] = useState(null);
+
+  const closeDialog = useCallback(() => setTarget(null), []);
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -39,8 +45,6 @@ function ProcessTable({ procs, cores = 1 }) {
     );
     return list;
   }, [procs, cores, sort, query]);
-
-  const maxMem = useMemo(() => Math.max(1, ...procs.map((p) => p.mem_usage)), [procs]);
 
   const toggle = (key) =>
     setSort((s) =>
@@ -77,15 +81,16 @@ function ProcessTable({ procs, cores = 1 }) {
                   </button>
                 </th>
               ))}
+              <th />
             </tr>
           </thead>
           <tbody>
             {rows.map((p) => (
-              <Row key={p.pid} p={p} maxMem={maxMem} />
+              <Row key={p.pid} p={p} onKill={setTarget} />
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={4} className="muted empty">
+                <td colSpan={5} className="muted empty">
                   {procs.length ? "No matches." : "Waiting for data…"}
                 </td>
               </tr>
@@ -93,6 +98,7 @@ function ProcessTable({ procs, cores = 1 }) {
           </tbody>
         </table>
       </div>
+      {target && <KillDialog target={target} procs={procs} onClose={closeDialog} />}
     </section>
   );
 }

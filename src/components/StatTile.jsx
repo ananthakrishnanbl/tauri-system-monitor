@@ -1,7 +1,7 @@
 import { memo } from "react";
 
 /** KPI tile with optional progress bar. `percent` is 0–100. */
-function StatTile({ label, value, sub, percent, color = "--blue" }) {
+function StatTile({ label, value, sub, percent, color = "--accent" }) {
   const p = percent == null ? null : Math.min(100, Math.max(0, percent));
   return (
     <div className="card tile">
