@@ -53,6 +53,27 @@ struct NetInfo{
     upload_speed: f64,
 }
 
+#[derive(Serialize)]
+struct FastData{
+    ram_usage: MemUsage,
+    swap_usage: MemUsage,
+    net_info: NetInfo,
+    cpu_usage: f32,
+}
+
+#[derive(Serialize)]
+struct SlowData{
+    proc_data: Vec<ProcInfo>,
+}
+
+
+#[derive(Serialize)]
+#[serde(tag="type")]
+enum StreamData{
+    Fast(FastData),
+    Slow(SlowData),
+}
+
 fn to_gb(bytes: u64)->f32{
     ((bytes as f64)/(1024.0*1024.0*1024.0)) as f32
 }
@@ -78,6 +99,7 @@ fn get_proc_info(
 )-> Vec<ProcInfo> {
     let mut proc: Vec<ProcInfo>=sys.processes()
     .iter()
+    .filter(|(_, p)| p.thread_kind().is_none())
     .map(
         |(pid,p)| ProcInfo{
             pid: pid.as_u32(),
@@ -160,6 +182,84 @@ async fn get_system_info(
     })
 }
 
+#[tauri::command]
+async fn stream_data(
+    state: State<'_, AppState>,
+    stream_channel: Channel<StreamData>,
+) -> Result<String, String> {
+    println!("RUNNING");
+
+    if state.running.swap(true, Ordering::SeqCst) {
+        return Err("Already Running".into());
+    }
+
+    let kind = ProcessRefreshKind::nothing().with_memory().with_cpu();
+    let mut tick: u32 = 0;
+
+    loop {
+        if !state.running.load(Ordering::SeqCst) {
+            println!("END RUNNING");
+            break;
+        }
+
+        // --- fast part: sys + net, each locked briefly ---
+        let fast = {
+            let mut sys = state.sys.lock().await;
+            sys.refresh_memory();
+            sys.refresh_cpu_usage();
+
+            let ram = get_ram_usage(&sys);
+            let swap = get_swap_usage(&sys);
+            let cpu = sys.global_cpu_usage();
+            (ram, swap, cpu)
+        };
+
+        let net_info = {
+            let mut net = state.net.lock().await;
+            net.refresh(true);
+            get_net_info(&net)
+        };
+
+        let slow = if tick % 4 == 0 {
+            let mut sys = state.sys.lock().await;
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, kind);
+            Some(SlowData { proc_data: get_proc_info(&sys) })
+        } else {
+            None
+        };
+
+        if let Some(slow) = slow {
+            if stream_channel.send(StreamData::Slow(slow)).is_err() {
+                break;
+            }
+        }
+
+        let fast_payload = StreamData::Fast(FastData {
+            ram_usage: fast.0,
+            swap_usage: fast.1,
+            net_info,
+            cpu_usage: fast.2,
+        });
+
+        if stream_channel.send(fast_payload).is_err() {
+            break;
+        }
+
+        tick = tick.wrapping_add(1);
+        sleep(Duration::from_millis(1000)).await;
+    }
+
+    state.running.store(false, Ordering::SeqCst);
+    Ok("Finished".into())
+}
+
+#[tauri::command]
+async fn stream_stop(
+    state: State<'_,AppState>
+) -> Result<(),()>{
+    state.running.store(false, Ordering::SeqCst);
+    Ok(())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -169,6 +269,7 @@ pub fn run() {
             let mut net = Networks::new_with_refreshed_list().map_err(|e| format!("sysinfo init failed: {e:?}"))?;
             sys.refresh_cpu_usage();
             sys.refresh_processes(ProcessesToUpdate::All, true);
+            net.refresh(true);
             app.manage(AppState {
                 sys: Mutex::new(sys),
                 net: Mutex::new(net),
@@ -178,7 +279,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            get_system_info
+            get_system_info,stream_stop,stream_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
